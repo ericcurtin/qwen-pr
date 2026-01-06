@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::git::{git_amend, git_push_force, run_qwen_fix};
-use crate::github::{get_check_runs, get_failed_logs, get_pr_comments, CheckRun, CheckStatus};
+use crate::github::{get_check_runs, get_failed_logs, get_pr_comments, resolve_all_threads, CheckRun, CheckStatus};
 
 const POLL_INTERVAL_SECS: u64 = 30;
 const MAX_FIX_ATTEMPTS: u32 = 10;
@@ -194,6 +194,14 @@ pub fn monitor_and_fix(pr_number: u64) -> Result<()> {
 
                 // Run qwen to fix
                 run_qwen_fix(&prompt)?;
+
+                // Resolve all review threads since they've been addressed
+                println!("Resolving review threads...");
+                match resolve_all_threads(pr_number) {
+                    Ok(count) if count > 0 => println!("  Resolved {} thread(s)", count),
+                    Ok(_) => println!("  No threads to resolve"),
+                    Err(e) => println!("  Warning: failed to resolve threads: {}", e),
+                }
 
                 // Amend and push
                 git_amend()?;

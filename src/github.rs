@@ -293,6 +293,172 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
     Ok(comments)
 }
 
+/// A review thread that can be resolved
+#[derive(Debug, Clone)]
+pub struct ReviewThread {
+    pub id: String,
+    pub is_resolved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhGraphQLResponse {
+    data: Option<GhGraphQLData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhGraphQLData {
+    repository: Option<GhRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhRepository {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<GhPullRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPullRequest {
+    #[serde(rename = "reviewThreads")]
+    review_threads: GhReviewThreads,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhReviewThreads {
+    nodes: Vec<GhReviewThread>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhReviewThread {
+    id: String,
+    #[serde(rename = "isResolved")]
+    is_resolved: bool,
+}
+
+/// Get all unresolved review threads for a PR
+pub fn get_unresolved_threads(pr_number: u64) -> Result<Vec<ReviewThread>> {
+    let query = r#"
+        query($pr: Int!) {
+            repository(owner: "", name: "") {
+                pullRequest(number: $pr) {
+                    reviewThreads(first: 100) {
+                        nodes {
+                            id
+                            isResolved
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    // First get repo info
+    let repo_output = Command::new("gh")
+        .args(["repo", "view", "--json", "owner,name"])
+        .output()
+        .context("Failed to get repo info")?;
+
+    if !repo_output.status.success() {
+        bail!("Failed to get repo info");
+    }
+
+    #[derive(Deserialize)]
+    struct RepoInfo {
+        owner: RepoOwner,
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct RepoOwner {
+        login: String,
+    }
+
+    let repo_info: RepoInfo = serde_json::from_slice(&repo_output.stdout)
+        .context("Failed to parse repo info")?;
+
+    let query_with_repo = query
+        .replace(r#"owner: """#, &format!(r#"owner: "{}""#, repo_info.owner.login))
+        .replace(r#"name: """#, &format!(r#"name: "{}""#, repo_info.name));
+
+    let output = Command::new("gh")
+        .args([
+            "api", "graphql",
+            "-f", &format!("query={}", query_with_repo),
+            "-F", &format!("pr={}", pr_number),
+        ])
+        .output()
+        .context("Failed to execute gh api graphql")?;
+
+    if !output.status.success() {
+        bail!(
+            "gh api graphql failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let response: GhGraphQLResponse = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse GraphQL response")?;
+
+    let threads = response
+        .data
+        .and_then(|d| d.repository)
+        .and_then(|r| r.pull_request)
+        .map(|pr| pr.review_threads.nodes)
+        .unwrap_or_default();
+
+    Ok(threads
+        .into_iter()
+        .filter(|t| !t.is_resolved)
+        .map(|t| ReviewThread {
+            id: t.id,
+            is_resolved: t.is_resolved,
+        })
+        .collect())
+}
+
+/// Resolve a review thread by its ID
+pub fn resolve_thread(thread_id: &str) -> Result<()> {
+    let mutation = r#"
+        mutation($threadId: ID!) {
+            resolveReviewThread(input: {threadId: $threadId}) {
+                thread {
+                    isResolved
+                }
+            }
+        }
+    "#;
+
+    let output = Command::new("gh")
+        .args([
+            "api", "graphql",
+            "-f", &format!("query={}", mutation),
+            "-f", &format!("threadId={}", thread_id),
+        ])
+        .output()
+        .context("Failed to execute gh api graphql")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to resolve thread: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(())
+}
+
+/// Resolve all unresolved review threads for a PR
+pub fn resolve_all_threads(pr_number: u64) -> Result<usize> {
+    let threads = get_unresolved_threads(pr_number)?;
+    let count = threads.len();
+
+    for thread in threads {
+        if let Err(e) = resolve_thread(&thread.id) {
+            eprintln!("Warning: failed to resolve thread: {}", e);
+        }
+    }
+
+    Ok(count)
+}
+
 /// Get the URL for a PR
 pub fn get_pr_url(pr_number: u64) -> Result<String> {
     let output = Command::new("gh")

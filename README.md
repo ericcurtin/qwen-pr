@@ -13,6 +13,7 @@ Automated PR workflow with AI-powered build failure remediation.
    - Fetches failed build logs from GitHub Actions
    - Fetches PR review comments (from bots and humans)
    - Sends everything to `qwen -y -p` with context to fix
+   - Resolves all review threads (marks comments as addressed)
 5. Amends the commit and force pushes again
 6. Repeats until all checks pass (max 10 attempts)
 
@@ -56,6 +57,9 @@ Monitor checks (every 30s)
                            │
                            ▼
                       qwen -y -p "<prompt with logs + comments>"
+                           │
+                           ▼
+                      Resolve review threads
                            │
                            ▼
                       git commit --amend
