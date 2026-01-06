@@ -182,6 +182,105 @@ pub fn get_failed_logs(run_url: &str) -> Result<String> {
     }
 }
 
+/// A review comment on a PR
+#[derive(Debug, Clone)]
+pub struct PrComment {
+    pub author: String,
+    pub body: String,
+    pub path: Option<String>,
+    pub line: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhReviewComment {
+    author: GhAuthor,
+    body: String,
+    path: Option<String>,
+    line: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhAuthor {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhReview {
+    author: GhAuthor,
+    body: String,
+    state: String,
+    comments: Vec<GhReviewComment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPrComments {
+    comments: Vec<GhReviewComment>,
+    reviews: Vec<GhReview>,
+}
+
+/// Get review comments on a PR (both general comments and line-specific review comments)
+pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
+    let output = Command::new("gh")
+        .args([
+            "pr", "view",
+            &pr_number.to_string(),
+            "--json", "comments,reviews",
+        ])
+        .output()
+        .context("Failed to execute gh pr view for comments")?;
+
+    if !output.status.success() {
+        bail!(
+            "gh pr view failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let pr_data: GhPrComments = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse gh pr view comments output")?;
+
+    let mut comments = Vec::new();
+
+    // Add general PR comments
+    for c in pr_data.comments {
+        if !c.body.trim().is_empty() {
+            comments.push(PrComment {
+                author: c.author.login,
+                body: c.body,
+                path: c.path,
+                line: c.line,
+            });
+        }
+    }
+
+    // Add review comments (from code reviews)
+    for review in pr_data.reviews {
+        // Include the review body if it has content
+        if !review.body.trim().is_empty() {
+            comments.push(PrComment {
+                author: review.author.login.clone(),
+                body: format!("[{}] {}", review.state, review.body),
+                path: None,
+                line: None,
+            });
+        }
+
+        // Include individual line comments from the review
+        for c in review.comments {
+            if !c.body.trim().is_empty() {
+                comments.push(PrComment {
+                    author: c.author.login,
+                    body: c.body,
+                    path: c.path,
+                    line: c.line,
+                });
+            }
+        }
+    }
+
+    Ok(comments)
+}
+
 /// Get the URL for a PR
 pub fn get_pr_url(pr_number: u64) -> Result<String> {
     let output = Command::new("gh")
