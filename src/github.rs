@@ -192,29 +192,41 @@ pub struct PrComment {
 }
 
 #[derive(Debug, Deserialize)]
-struct GhReviewComment {
-    author: GhAuthor,
-    body: String,
-    path: Option<String>,
-    line: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
 struct GhAuthor {
     login: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct GhReview {
+struct GhComment {
     author: GhAuthor,
     body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhReviewComment {
+    author: GhAuthor,
+    body: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    line: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhReview {
+    author: GhAuthor,
+    #[serde(default)]
+    body: String,
     state: String,
+    #[serde(default)]
     comments: Vec<GhReviewComment>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GhPrComments {
-    comments: Vec<GhReviewComment>,
+    #[serde(default)]
+    comments: Vec<GhComment>,
+    #[serde(default)]
     reviews: Vec<GhReview>,
 }
 
@@ -241,14 +253,14 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
 
     let mut comments = Vec::new();
 
-    // Add general PR comments
+    // Add general PR comments (these don't have file/line info)
     for c in pr_data.comments {
         if !c.body.trim().is_empty() {
             comments.push(PrComment {
                 author: c.author.login,
                 body: c.body,
-                path: c.path,
-                line: c.line,
+                path: None,
+                line: None,
             });
         }
     }
