@@ -297,7 +297,6 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
 #[derive(Debug, Clone)]
 pub struct ReviewThread {
     pub id: String,
-    pub is_resolved: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,10 +406,7 @@ pub fn get_unresolved_threads(pr_number: u64) -> Result<Vec<ReviewThread>> {
     Ok(threads
         .into_iter()
         .filter(|t| !t.is_resolved)
-        .map(|t| ReviewThread {
-            id: t.id,
-            is_resolved: t.is_resolved,
-        })
+        .map(|t| ReviewThread { id: t.id })
         .collect())
 }
 
