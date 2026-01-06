@@ -77,12 +77,12 @@ pub fn git_amend() -> Result<()> {
     Ok(())
 }
 
-/// Run the qwen AI assistant to attempt fixes
-pub fn run_qwen_fix() -> Result<()> {
+/// Run the qwen AI assistant to attempt fixes with the given prompt
+pub fn run_qwen_fix(prompt: &str) -> Result<()> {
     println!("Running qwen to fix issues...");
 
     let status = Command::new("qwen")
-        .args(["-y", "-p"])
+        .args(["-y", "-p", prompt])
         .status()
         .context("Failed to execute qwen -y -p")?;
 

@@ -9,11 +9,12 @@ pub enum CheckStatus {
     Failure,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CheckRun {
     pub name: String,
     pub status: CheckStatus,
     pub conclusion: Option<String>,
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,8 +27,8 @@ struct GhPrListItem {
 #[derive(Debug, Deserialize)]
 struct GhCheckRun {
     name: String,
-    status: String,
-    conclusion: String,
+    state: String,
+    link: Option<String>,
 }
 
 /// Ensure gh CLI is available and authenticated
@@ -72,12 +73,9 @@ pub fn create_pr(branch: &str) -> Result<u64> {
     println!("Creating pull request for branch '{}'...", branch);
 
     // Create PR with auto-generated title and body
+    // gh pr create outputs the PR URL to stdout
     let output = Command::new("gh")
-        .args([
-            "pr", "create",
-            "--fill",
-            "--json", "number",
-        ])
+        .args(["pr", "create", "--fill"])
         .output()
         .context("Failed to execute gh pr create")?;
 
@@ -88,16 +86,17 @@ pub fn create_pr(branch: &str) -> Result<u64> {
         );
     }
 
-    #[derive(Deserialize)]
-    struct PrCreated {
-        number: u64,
-    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    println!("Created PR: {}", url);
 
-    let pr: PrCreated = serde_json::from_slice(&output.stdout)
-        .context("Failed to parse gh pr create output")?;
+    // Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123)
+    let pr_number = url
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<u64>().ok())
+        .context("Failed to parse PR number from URL")?;
 
-    println!("Created PR #{}", pr.number);
-    Ok(pr.number)
+    Ok(pr_number)
 }
 
 /// Get the check runs for a PR
@@ -106,7 +105,7 @@ pub fn get_check_runs(pr_number: u64) -> Result<Vec<CheckRun>> {
         .args([
             "pr", "checks",
             &pr_number.to_string(),
-            "--json", "name,status,conclusion",
+            "--json", "name,state,link",
         ])
         .output()
         .context("Failed to execute gh pr checks")?;
@@ -126,24 +125,61 @@ pub fn get_check_runs(pr_number: u64) -> Result<Vec<CheckRun>> {
     Ok(checks
         .into_iter()
         .map(|c| {
-            let status = match c.status.as_str() {
-                "completed" => match c.conclusion.as_str() {
-                    "success" | "skipped" | "neutral" => CheckStatus::Success,
-                    _ => CheckStatus::Failure,
-                },
-                _ => CheckStatus::Pending,
+            // state values: PENDING, SUCCESS, FAILURE, CANCELLED, SKIPPED, etc.
+            let status = match c.state.to_uppercase().as_str() {
+                "SUCCESS" | "SKIPPED" | "NEUTRAL" => CheckStatus::Success,
+                "PENDING" | "QUEUED" | "IN_PROGRESS" | "WAITING" => CheckStatus::Pending,
+                _ => CheckStatus::Failure,
             };
             CheckRun {
                 name: c.name,
                 status,
-                conclusion: if c.conclusion.is_empty() {
-                    None
-                } else {
-                    Some(c.conclusion)
-                },
+                conclusion: Some(c.state),
+                link: c.link,
             }
         })
         .collect())
+}
+
+/// Extract run ID from a GitHub Actions URL
+/// e.g., https://github.com/owner/repo/actions/runs/12345/job/67890 -> 12345
+fn extract_run_id(url: &str) -> Option<&str> {
+    let parts: Vec<&str> = url.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
+        if *part == "runs" && i + 1 < parts.len() {
+            return Some(parts[i + 1]);
+        }
+    }
+    None
+}
+
+/// Get failed job logs for a workflow run
+pub fn get_failed_logs(run_url: &str) -> Result<String> {
+    let run_id = extract_run_id(run_url)
+        .context("Could not extract run ID from URL")?;
+
+    let output = Command::new("gh")
+        .args(["run", "view", run_id, "--log-failed"])
+        .output()
+        .context("Failed to execute gh run view")?;
+
+    if !output.status.success() {
+        // If no failed logs, return empty
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no failed jobs") || stderr.contains("no logs") {
+            return Ok(String::new());
+        }
+        bail!("gh run view --log-failed failed: {}", stderr);
+    }
+
+    let logs = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Truncate logs if too long (keep last 10000 chars which usually has the error)
+    if logs.len() > 15000 {
+        Ok(format!("...[truncated]...\n{}", &logs[logs.len() - 10000..]))
+    } else {
+        Ok(logs)
+    }
 }
 
 /// Get the URL for a PR
