@@ -152,7 +152,7 @@ fn build_fix_prompt(pr_number: u64, checks: &[CheckRun]) -> Result<String> {
 }
 
 /// Monitor PR checks and attempt fixes on failure
-pub fn monitor_and_fix(pr_number: u64) -> Result<()> {
+pub fn monitor_and_fix(pr_number: u64, push_args: &[String]) -> Result<()> {
     let mut fix_attempts = 0;
 
     loop {
@@ -205,7 +205,7 @@ pub fn monitor_and_fix(pr_number: u64) -> Result<()> {
 
                 // Amend and push
                 git_amend()?;
-                git_push_force()?;
+                git_push_force(push_args)?;
 
                 // Wait a bit for GitHub to register the new commit
                 println!("Waiting for GitHub to process new commit...");

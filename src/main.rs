@@ -20,10 +20,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Push, create/update PR, and monitor builds (auto-fix failures with qwen)
-    Push,
+    Push {
+        /// Additional arguments to pass to git push (e.g., remote name)
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
 }
 
-fn run_push() -> Result<()> {
+fn run_push(push_args: &[String]) -> Result<()> {
     // Pre-flight checks
     ensure_git_repo()?;
     ensure_gh_cli()?;
@@ -36,7 +40,7 @@ fn run_push() -> Result<()> {
     }
 
     // Force push
-    git_push_force()?;
+    git_push_force(push_args)?;
 
     // Find or create PR
     let pr_number = match find_existing_pr(&branch)? {
@@ -52,7 +56,7 @@ fn run_push() -> Result<()> {
     println!("PR URL: {}", url);
 
     // Monitor and fix
-    monitor_and_fix(pr_number)?;
+    monitor_and_fix(pr_number, push_args)?;
 
     println!("\n🎉 PR #{} is ready!", pr_number);
     Ok(())
@@ -62,7 +66,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Push => run_push(),
+        Commands::Push { args } => run_push(&args),
     };
 
     if let Err(e) = result {

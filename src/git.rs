@@ -32,14 +32,24 @@ pub fn ensure_git_repo() -> Result<()> {
     Ok(())
 }
 
-/// Force push the current branch to origin
-pub fn git_push_force() -> Result<()> {
-    println!("Pushing to origin...");
+/// Force push the current branch
+/// If extra_args is empty, pushes to origin. Otherwise uses the provided args.
+pub fn git_push_force(extra_args: &[String]) -> Result<()> {
+    println!("Pushing...");
 
-    let status = Command::new("git")
-        .args(["push", "-f", "--set-upstream", "origin", "HEAD"])
-        .status()
-        .context("Failed to execute git push")?;
+    let mut cmd = Command::new("git");
+    cmd.arg("push").arg("-f");
+
+    if extra_args.is_empty() {
+        // Default: push to origin with upstream tracking
+        cmd.args(["--set-upstream", "origin", "HEAD"]);
+    } else {
+        // Use provided args (e.g., "ericcurtin" becomes "git push -f ericcurtin HEAD")
+        cmd.args(extra_args);
+        cmd.arg("HEAD");
+    }
+
+    let status = cmd.status().context("Failed to execute git push")?;
 
     if !status.success() {
         bail!("git push -f failed");
