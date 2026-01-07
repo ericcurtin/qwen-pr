@@ -77,6 +77,7 @@ pub fn find_existing_pr(branch: &str, remote: Option<&str>) -> Result<Option<u64
 
 /// Create a new PR for the current branch
 /// If remote is specified (e.g., "ericcurtin"), creates PR from that fork
+/// Returns the PR number (either newly created or existing if one already exists)
 pub fn create_pr(branch: &str, remote: Option<&str>) -> Result<u64> {
     println!("Creating pull request for branch '{}'...", branch);
 
@@ -93,10 +94,18 @@ pub fn create_pr(branch: &str, remote: Option<&str>) -> Result<u64> {
     let output = cmd.output().context("Failed to execute gh pr create")?;
 
     if !output.status.success() {
-        bail!(
-            "gh pr create failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Check if PR already exists - extract PR number from error message
+        // Error format: "a pull request ... already exists:\nhttps://github.com/owner/repo/pull/123"
+        if stderr.contains("already exists") {
+            if let Some(pr_number) = extract_pr_number_from_text(&stderr) {
+                println!("PR already exists: #{}", pr_number);
+                return Ok(pr_number);
+            }
+        }
+
+        bail!("gh pr create failed: {}", stderr);
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -110,6 +119,21 @@ pub fn create_pr(branch: &str, remote: Option<&str>) -> Result<u64> {
         .context("Failed to parse PR number from URL")?;
 
     Ok(pr_number)
+}
+
+/// Extract PR number from text containing a GitHub PR URL
+fn extract_pr_number_from_text(text: &str) -> Option<u64> {
+    // Look for pattern like "/pull/123" in the text
+    for part in text.split("/pull/") {
+        if let Some(num_str) = part.split(|c: char| !c.is_ascii_digit()).next() {
+            if let Ok(num) = num_str.parse::<u64>() {
+                if num > 0 {
+                    return Some(num);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Get the check runs for a PR

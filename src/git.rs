@@ -331,18 +331,83 @@ pub fn git_amend() -> Result<()> {
 }
 
 /// Run the qwen AI assistant to attempt fixes with the given prompt
+/// Falls back to claude if qwen fails (e.g., quota exceeded)
 pub fn run_qwen_fix(prompt: &str) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+
     println!("Running qwen to fix issues...");
 
-    let status = Command::new("qwen")
+    let mut child = Command::new("qwen")
         .args(["-y", "-p", prompt])
-        .status()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .context("Failed to execute qwen -y -p")?;
 
-    if !status.success() {
-        bail!("qwen -y -p failed");
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let mut quota_exceeded = false;
+
+    // Read and print stdout, checking for quota errors
+    if let Some(stdout) = stdout {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                println!("{}", line);
+                if line.contains("quota exceeded") || line.contains("quota has been exhausted") {
+                    quota_exceeded = true;
+                }
+            }
+        }
     }
 
-    println!("Qwen fix attempt completed");
+    // Read and print stderr, checking for quota errors
+    if let Some(stderr) = stderr {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                eprintln!("{}", line);
+                if line.contains("quota exceeded") || line.contains("quota has been exhausted") {
+                    quota_exceeded = true;
+                }
+            }
+        }
+    }
+
+    let status = child.wait().context("Failed to wait for qwen")?;
+
+    if quota_exceeded {
+        println!("Qwen quota exceeded, falling back to claude...");
+        return run_claude_fix(prompt);
+    }
+
+    if status.success() {
+        println!("Qwen fix attempt completed");
+        return Ok(());
+    }
+
+    // Qwen failed for another reason, fall back to claude
+    println!("Qwen failed, falling back to claude...");
+    run_claude_fix(prompt)
+}
+
+/// Run claude as a fallback when qwen fails
+fn run_claude_fix(prompt: &str) -> Result<()> {
+    println!("Running claude to fix issues...");
+
+    let status = Command::new("claude")
+        .args(["--dangerously-skip-permissions", "-p", prompt])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .context("Failed to execute claude --dangerously-skip-permissions")?;
+
+    if !status.success() {
+        bail!("claude fix failed");
+    }
+
+    println!("Claude fix attempt completed");
     Ok(())
 }
