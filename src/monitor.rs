@@ -3,11 +3,27 @@ use std::collections::HashSet;
 use std::thread;
 use std::time::Duration;
 
-use crate::git::{git_amend, git_push_force, run_qwen_fix};
-use crate::github::{get_check_runs, get_failed_logs, get_pr_comments, resolve_all_threads, CheckRun, CheckStatus};
+use crate::git::{git_amend, git_fetch, git_push_force, git_rebase_with_conflict_resolution, run_qwen_fix};
+use crate::github::{get_check_runs, get_failed_logs, get_pr_base_branch, get_pr_comments, resolve_all_threads, CheckRun, CheckStatus};
 
-const POLL_INTERVAL_SECS: u64 = 30;
+const POLL_INTERVAL_SECS: u64 = 8;
 const MAX_FIX_ATTEMPTS: u32 = 16;
+const MAX_REBASE_CONFLICT_ATTEMPTS: u32 = 5;
+
+/// Fetch and rebase against the PR's base branch
+fn fetch_and_rebase(pr_number: u64) -> Result<()> {
+    let base_branch = get_pr_base_branch(pr_number)?;
+    git_fetch("origin")?;
+
+    let target_ref = format!("origin/{}", base_branch);
+    let success = git_rebase_with_conflict_resolution(&target_ref, MAX_REBASE_CONFLICT_ATTEMPTS)?;
+
+    if !success {
+        anyhow::bail!("Rebase failed - could not resolve conflicts automatically");
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum OverallStatus {
@@ -172,8 +188,19 @@ fn build_fix_prompt(
 pub fn monitor_and_fix(pr_number: u64, push_args: &[String]) -> Result<()> {
     let mut fix_attempts = 0;
     let mut addressed_comments: HashSet<String> = HashSet::new();
+    let mut first_check = true;
 
     loop {
+        // Wait before checking (gives CI time to start on first check)
+        if first_check {
+            println!(
+                "\nWaiting {} seconds for CI to start...",
+                POLL_INTERVAL_SECS
+            );
+            first_check = false;
+            thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+        }
+
         println!("\nChecking PR #{} status...", pr_number);
 
         let checks = get_check_runs(pr_number)?;
@@ -226,13 +253,14 @@ pub fn monitor_and_fix(pr_number: u64, push_args: &[String]) -> Result<()> {
                     Err(_) => {} // Silently ignore - some threads can't be resolved
                 }
 
-                // Amend and push
+                // Amend, rebase, and push
                 git_amend()?;
+                fetch_and_rebase(pr_number)?;
                 git_push_force(push_args)?;
 
                 // Wait a bit for GitHub to register the new commit
                 println!("Waiting for GitHub to process new commit...");
-                thread::sleep(Duration::from_secs(10));
+                thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
             }
         }
     }

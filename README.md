@@ -6,16 +6,19 @@ Automated PR workflow with AI-powered build failure remediation.
 
 `qwen-pr push` automates the entire PR cycle:
 
-1. Force pushes your current branch
-2. Creates a PR (or reuses an existing one)
-3. Monitors GitHub Actions checks
-4. If a check fails:
+1. Fetches from origin and rebases onto the target branch
+   - If conflicts occur, uses `qwen` to resolve them automatically
+2. Force pushes your current branch
+3. Creates a PR (or reuses an existing one)
+4. Monitors GitHub Actions checks
+5. If a check fails:
    - Fetches failed build logs from GitHub Actions
    - Fetches PR review comments (from bots and humans)
    - Sends everything to `qwen -y -p` with context to fix
    - Resolves all review threads (marks comments as addressed)
-5. Amends the commit and force pushes again
-6. Repeats until all checks pass (max 16 attempts)
+   - Rebases again before pushing (in case target branch changed)
+6. Amends the commit and force pushes again
+7. Repeats until all checks pass (max 16 attempts)
 
 ## Prerequisites
 
@@ -38,6 +41,12 @@ qwen-pr push
 ## How it works
 
 ```
+git fetch origin
+     │
+     ▼
+git rebase origin/<base> ──▶ conflicts? ──▶ qwen fixes them
+     │
+     ▼
 git push -f
      │
      ▼
@@ -63,6 +72,9 @@ Monitor checks (every 30s)
                            │
                            ▼
                       git commit --amend
+                           │
+                           ▼
+                      git fetch + rebase (resolve conflicts if any)
                            │
                            ▼
                       git push -f

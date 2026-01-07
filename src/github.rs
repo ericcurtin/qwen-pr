@@ -218,25 +218,12 @@ struct GhComment {
 }
 
 #[derive(Debug, Deserialize)]
-struct GhReviewComment {
-    id: String,
-    author: GhAuthor,
-    body: String,
-    #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    line: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
 struct GhReview {
     id: String,
     author: GhAuthor,
     #[serde(default)]
     body: String,
     state: String,
-    #[serde(default)]
-    comments: Vec<GhReviewComment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,8 +234,24 @@ struct GhPrComments {
     reviews: Vec<GhReview>,
 }
 
-/// Get review comments on a PR (both general comments and line-specific review comments)
+/// Inline review comment from the API
+#[derive(Debug, Deserialize)]
+struct GhInlineComment {
+    id: u64,
+    user: GhAuthor,
+    body: String,
+    path: Option<String>,
+    #[serde(default)]
+    line: Option<u64>,
+    #[serde(default)]
+    original_line: Option<u64>,
+}
+
+/// Get review comments on a PR (both general comments and inline code review comments)
 pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
+    let mut comments = Vec::new();
+
+    // 1. Get general PR conversation comments
     let output = Command::new("gh")
         .args([
             "pr", "view",
@@ -258,54 +261,58 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
         .output()
         .context("Failed to execute gh pr view for comments")?;
 
-    if !output.status.success() {
-        bail!(
-            "gh pr view failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    if output.status.success() {
+        if let Ok(pr_data) = serde_json::from_slice::<GhPrComments>(&output.stdout) {
+            // Add general PR comments (these don't have file/line info)
+            for c in pr_data.comments {
+                if !c.body.trim().is_empty() {
+                    comments.push(PrComment {
+                        id: c.id,
+                        author: c.author.login,
+                        body: c.body,
+                        path: None,
+                        line: None,
+                    });
+                }
+            }
 
-    let pr_data: GhPrComments = serde_json::from_slice(&output.stdout)
-        .context("Failed to parse gh pr view comments output")?;
-
-    let mut comments = Vec::new();
-
-    // Add general PR comments (these don't have file/line info)
-    for c in pr_data.comments {
-        if !c.body.trim().is_empty() {
-            comments.push(PrComment {
-                id: c.id,
-                author: c.author.login,
-                body: c.body,
-                path: None,
-                line: None,
-            });
+            // Add review bodies (overall review comments)
+            for review in pr_data.reviews {
+                if !review.body.trim().is_empty() {
+                    comments.push(PrComment {
+                        id: review.id.clone(),
+                        author: review.author.login.clone(),
+                        body: format!("[{}] {}", review.state, review.body),
+                        path: None,
+                        line: None,
+                    });
+                }
+            }
         }
     }
 
-    // Add review comments (from code reviews)
-    for review in pr_data.reviews {
-        // Include the review body if it has content
-        if !review.body.trim().is_empty() {
-            comments.push(PrComment {
-                id: review.id.clone(),
-                author: review.author.login.clone(),
-                body: format!("[{}] {}", review.state, review.body),
-                path: None,
-                line: None,
-            });
-        }
+    // 2. Get inline code review comments via API
+    let api_output = Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{{owner}}/{{repo}}/pulls/{}/comments", pr_number),
+        ])
+        .output()
+        .context("Failed to execute gh api for inline comments")?;
 
-        // Include individual line comments from the review
-        for c in review.comments {
-            if !c.body.trim().is_empty() {
-                comments.push(PrComment {
-                    id: c.id,
-                    author: c.author.login,
-                    body: c.body,
-                    path: c.path,
-                    line: c.line,
-                });
+    if api_output.status.success() {
+        if let Ok(inline_comments) = serde_json::from_slice::<Vec<GhInlineComment>>(&api_output.stdout) {
+            for c in inline_comments {
+                if !c.body.trim().is_empty() {
+                    let line = c.line.or(c.original_line);
+                    comments.push(PrComment {
+                        id: c.id.to_string(),
+                        author: c.user.login,
+                        body: c.body,
+                        path: c.path,
+                        line,
+                    });
+                }
             }
         }
     }
@@ -498,4 +505,61 @@ pub fn get_pr_url(pr_number: u64) -> Result<String> {
         .context("Failed to parse gh pr view output")?;
 
     Ok(pr.url)
+}
+
+/// Get the base (target) branch for a PR
+pub fn get_pr_base_branch(pr_number: u64) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["pr", "view", &pr_number.to_string(), "--json", "baseRefName"])
+        .output()
+        .context("Failed to execute gh pr view")?;
+
+    if !output.status.success() {
+        bail!(
+            "gh pr view failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct PrView {
+        #[serde(rename = "baseRefName")]
+        base_ref_name: String,
+    }
+
+    let pr: PrView = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse gh pr view output")?;
+
+    Ok(pr.base_ref_name)
+}
+
+/// Get the default branch for the repo (main/master)
+pub fn get_default_branch() -> Result<String> {
+    let output = Command::new("gh")
+        .args(["repo", "view", "--json", "defaultBranchRef"])
+        .output()
+        .context("Failed to execute gh repo view")?;
+
+    if !output.status.success() {
+        bail!(
+            "gh repo view failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct BranchRef {
+        name: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RepoView {
+        #[serde(rename = "defaultBranchRef")]
+        default_branch_ref: BranchRef,
+    }
+
+    let repo: RepoView = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse gh repo view output")?;
+
+    Ok(repo.default_branch_ref.name)
 }
