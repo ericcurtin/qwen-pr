@@ -49,9 +49,16 @@ pub fn ensure_gh_cli() -> Result<()> {
 }
 
 /// Find an existing PR for the given branch
-pub fn find_existing_pr(branch: &str) -> Result<Option<u64>> {
+/// If remote is specified (e.g., "ericcurtin"), looks for PRs from that fork
+pub fn find_existing_pr(branch: &str, remote: Option<&str>) -> Result<Option<u64>> {
+    // For forks, we need to use "owner:branch" format
+    let head = match remote {
+        Some(r) if r != "origin" => format!("{}:{}", r, branch),
+        _ => branch.to_string(),
+    };
+
     let output = Command::new("gh")
-        .args(["pr", "list", "--head", branch, "--json", "number,headRefName"])
+        .args(["pr", "list", "--head", &head, "--json", "number,headRefName"])
         .output()
         .context("Failed to execute gh pr list")?;
 
@@ -69,15 +76,21 @@ pub fn find_existing_pr(branch: &str) -> Result<Option<u64>> {
 }
 
 /// Create a new PR for the current branch
-pub fn create_pr(branch: &str) -> Result<u64> {
+/// If remote is specified (e.g., "ericcurtin"), creates PR from that fork
+pub fn create_pr(branch: &str, remote: Option<&str>) -> Result<u64> {
     println!("Creating pull request for branch '{}'...", branch);
 
-    // Create PR with auto-generated title and body
-    // gh pr create outputs the PR URL to stdout
-    let output = Command::new("gh")
-        .args(["pr", "create", "--fill"])
-        .output()
-        .context("Failed to execute gh pr create")?;
+    let mut cmd = Command::new("gh");
+    cmd.args(["pr", "create", "--fill"]);
+
+    // For forks, specify the head as "owner:branch"
+    if let Some(r) = remote {
+        if r != "origin" {
+            cmd.args(["--head", &format!("{}:{}", r, branch)]);
+        }
+    }
+
+    let output = cmd.output().context("Failed to execute gh pr create")?;
 
     if !output.status.success() {
         bail!(
@@ -185,6 +198,7 @@ pub fn get_failed_logs(run_url: &str) -> Result<String> {
 /// A review comment on a PR
 #[derive(Debug, Clone)]
 pub struct PrComment {
+    pub id: String,
     pub author: String,
     pub body: String,
     pub path: Option<String>,
@@ -198,12 +212,14 @@ struct GhAuthor {
 
 #[derive(Debug, Deserialize)]
 struct GhComment {
+    id: String,
     author: GhAuthor,
     body: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct GhReviewComment {
+    id: String,
     author: GhAuthor,
     body: String,
     #[serde(default)]
@@ -214,6 +230,7 @@ struct GhReviewComment {
 
 #[derive(Debug, Deserialize)]
 struct GhReview {
+    id: String,
     author: GhAuthor,
     #[serde(default)]
     body: String,
@@ -257,6 +274,7 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
     for c in pr_data.comments {
         if !c.body.trim().is_empty() {
             comments.push(PrComment {
+                id: c.id,
                 author: c.author.login,
                 body: c.body,
                 path: None,
@@ -270,6 +288,7 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
         // Include the review body if it has content
         if !review.body.trim().is_empty() {
             comments.push(PrComment {
+                id: review.id.clone(),
                 author: review.author.login.clone(),
                 body: format!("[{}] {}", review.state, review.body),
                 path: None,
@@ -281,6 +300,7 @@ pub fn get_pr_comments(pr_number: u64) -> Result<Vec<PrComment>> {
         for c in review.comments {
             if !c.body.trim().is_empty() {
                 comments.push(PrComment {
+                    id: c.id,
                     author: c.author.login,
                     body: c.body,
                     path: c.path,

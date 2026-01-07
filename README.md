@@ -15,7 +15,7 @@ Automated PR workflow with AI-powered build failure remediation.
    - Sends everything to `qwen -y -p` with context to fix
    - Resolves all review threads (marks comments as addressed)
 5. Amends the commit and force pushes again
-6. Repeats until all checks pass (max 10 attempts)
+6. Repeats until all checks pass (max 16 attempts)
 
 ## Prerequisites
 

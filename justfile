@@ -13,7 +13,7 @@ release:
 
 # Install to ~/.cargo/bin and sign it
 install:
-    cargo install --path .
+    cargo install -f --path .
     codesign -s - ~/.cargo/bin/qwen-pr
 
 # Run clippy lints

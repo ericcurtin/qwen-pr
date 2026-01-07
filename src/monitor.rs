@@ -7,7 +7,7 @@ use crate::git::{git_amend, git_push_force, run_qwen_fix};
 use crate::github::{get_check_runs, get_failed_logs, get_pr_comments, resolve_all_threads, CheckRun, CheckStatus};
 
 const POLL_INTERVAL_SECS: u64 = 30;
-const MAX_FIX_ATTEMPTS: u32 = 10;
+const MAX_FIX_ATTEMPTS: u32 = 16;
 
 #[derive(Debug, PartialEq, Eq)]
 enum OverallStatus {
@@ -63,32 +63,49 @@ fn print_check_status(checks: &[crate::github::CheckRun]) {
 }
 
 /// Build a prompt for qwen with failed check logs and PR comments
-fn build_fix_prompt(pr_number: u64, checks: &[CheckRun]) -> Result<String> {
+/// Returns the prompt and the IDs of comments that were included
+fn build_fix_prompt(
+    pr_number: u64,
+    checks: &[CheckRun],
+    addressed_comments: &HashSet<String>,
+) -> Result<(String, Vec<String>)> {
     let mut prompt = String::new();
     let mut has_content = false;
+    let mut new_comment_ids = Vec::new();
 
-    // Fetch and include PR review comments
+    // Fetch and include PR review comments (excluding already addressed ones)
     println!("Fetching PR comments...");
     match get_pr_comments(pr_number) {
-        Ok(comments) if !comments.is_empty() => {
-            has_content = true;
-            prompt.push_str("# Review Comments\n\n");
-            prompt.push_str("The following review comments have been left on this PR. Please address them:\n\n");
+        Ok(comments) => {
+            // Filter out already addressed comments
+            let new_comments: Vec<_> = comments
+                .into_iter()
+                .filter(|c| !addressed_comments.contains(&c.id))
+                .collect();
 
-            for comment in &comments {
-                if let (Some(path), Some(line)) = (&comment.path, comment.line) {
-                    prompt.push_str(&format!("## {}:{} (@{})\n", path, line, comment.author));
-                } else if let Some(path) = &comment.path {
-                    prompt.push_str(&format!("## {} (@{})\n", path, comment.author));
-                } else {
-                    prompt.push_str(&format!("## Comment by @{}\n", comment.author));
+            if !new_comments.is_empty() {
+                has_content = true;
+                prompt.push_str("# Review Comments\n\n");
+                prompt.push_str("The following review comments have been left on this PR. Please address them:\n\n");
+
+                for comment in &new_comments {
+                    new_comment_ids.push(comment.id.clone());
+
+                    if let (Some(path), Some(line)) = (&comment.path, comment.line) {
+                        prompt.push_str(&format!("## {}:{} (@{})\n", path, line, comment.author));
+                    } else if let Some(path) = &comment.path {
+                        prompt.push_str(&format!("## {} (@{})\n", path, comment.author));
+                    } else {
+                        prompt.push_str(&format!("## Comment by @{}\n", comment.author));
+                    }
+                    prompt.push_str(&comment.body);
+                    prompt.push_str("\n\n");
                 }
-                prompt.push_str(&comment.body);
-                prompt.push_str("\n\n");
+
+                println!("  Found {} new comment(s) to address", new_comments.len());
+            } else {
+                println!("  No new comments to address");
             }
-        }
-        Ok(_) => {
-            println!("  No comments found");
         }
         Err(e) => {
             println!("  Could not fetch comments: {}", e);
@@ -143,17 +160,18 @@ fn build_fix_prompt(pr_number: u64, checks: &[CheckRun]) -> Result<String> {
     }
 
     if !has_content {
-        return Ok("Fix any issues with the code.".to_string());
+        return Ok(("Fix any issues with the code.".to_string(), new_comment_ids));
     }
 
     prompt.push_str("\nPlease analyze the errors and review comments, then fix the code to address all issues.");
 
-    Ok(prompt)
+    Ok((prompt, new_comment_ids))
 }
 
 /// Monitor PR checks and attempt fixes on failure
 pub fn monitor_and_fix(pr_number: u64, push_args: &[String]) -> Result<()> {
     let mut fix_attempts = 0;
+    let mut addressed_comments: HashSet<String> = HashSet::new();
 
     loop {
         println!("\nChecking PR #{} status...", pr_number);
@@ -189,18 +207,23 @@ pub fn monitor_and_fix(pr_number: u64, push_args: &[String]) -> Result<()> {
                     );
                 }
 
-                // Collect failed checks, logs, and PR comments
-                let prompt = build_fix_prompt(pr_number, &checks)?;
+                // Collect failed checks, logs, and PR comments (excluding already addressed)
+                let (prompt, new_comment_ids) = build_fix_prompt(pr_number, &checks, &addressed_comments)?;
 
                 // Run qwen to fix
                 run_qwen_fix(&prompt)?;
 
-                // Resolve all review threads since they've been addressed
+                // Mark these comments as addressed
+                for id in new_comment_ids {
+                    addressed_comments.insert(id);
+                }
+
+                // Try to resolve review threads (some may not be resolvable, that's ok)
                 println!("Resolving review threads...");
                 match resolve_all_threads(pr_number) {
                     Ok(count) if count > 0 => println!("  Resolved {} thread(s)", count),
-                    Ok(_) => println!("  No threads to resolve"),
-                    Err(e) => println!("  Warning: failed to resolve threads: {}", e),
+                    Ok(_) => {}
+                    Err(_) => {} // Silently ignore - some threads can't be resolved
                 }
 
                 // Amend and push
