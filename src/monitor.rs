@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::git::{git_amend, git_fetch, git_push_force, git_rebase_with_conflict_resolution, run_qwen_fix};
 use crate::github::{get_check_runs, get_failed_logs, get_pr_base_branch, get_pr_comments, resolve_all_threads, CheckRun, CheckStatus};
 
-const POLL_INTERVAL_SECS: u64 = 64;
+const POLL_INTERVAL_SECS: u64 = 128;
 const MAX_FIX_ATTEMPTS: u32 = 16;
 const MAX_REBASE_CONFLICT_ATTEMPTS: u32 = 5;
 
